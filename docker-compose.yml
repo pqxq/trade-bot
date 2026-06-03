@@ -1,13 +1,23 @@
-
 services:
   trader:
     build: .
-    container_name: telegram-paper-trader
+    container_name: btc-futures-testnet
     env_file: .env
     ports:
       - "8000:8000"
     volumes:
+      # Persist SQLite database and Telegram session between restarts
       - ./data:/app/data
+      # Persist loguru log files
       - ./logs:/app/logs
-      - ./exports:/app/exports
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8000/')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    # Limit memory — safe on Oracle Cloud free tier (1 GB RAM)
+    mem_limit: 512m
+    mem_reservation: 128m
