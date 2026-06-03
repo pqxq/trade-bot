@@ -1,89 +1,66 @@
-"""Statistics and performance calculations."""
+"""Trade statistics computation."""
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Iterable, List
-
-import pandas as pd
+from dataclasses import dataclass, field
+from typing import Any, Dict, List
 
 
-@dataclass(frozen=True)
+@dataclass
 class TradeStats:
-    """Aggregated trade statistics."""
-
-    total_trades: int
-    win_rate: float
-    average_profit: float
-    average_loss: float
-    average_trade: float
-    profit_factor: float
-    maximum_drawdown: float
-    largest_winner: float
-    largest_loser: float
-    current_equity: float
-    roi_percent: float
-
-
-def calculate_max_drawdown(equity_curve: Iterable[float]) -> float:
-    """Calculate maximum drawdown as a percentage."""
-    values = list(equity_curve)
-    if not values:
-        return 0.0
-    peak = values[0]
-    max_drawdown = 0.0
-    for value in values:
-        if value > peak:
-            peak = value
-        drawdown = (peak - value) / peak if peak else 0.0
-        if drawdown > max_drawdown:
-            max_drawdown = drawdown
-    return max_drawdown * 100
+    total_trades: int = 0
+    long_trades: int = 0
+    short_trades: int = 0
+    strong_trades: int = 0
+    normal_trades: int = 0
+    weak_trades: int = 0
+    winning_trades: int = 0
+    losing_trades: int = 0
+    win_rate: float = 0.0
+    average_trade: float = 0.0
+    average_long: float = 0.0
+    average_short: float = 0.0
+    best_trade: float = 0.0
+    worst_trade: float = 0.0
+    total_pnl: float = 0.0
+    roi_percent: float = 0.0
+    equity_curve: List[Dict[str, Any]] = field(default_factory=list)
 
 
-def calculate_trade_stats(
-    trades: List[dict],
-    equity_curve: Iterable[float],
-    current_equity: float,
-    initial_balance: float,
-) -> TradeStats:
-    """Calculate aggregated statistics from trade data."""
-    if not trades:
-        return TradeStats(
-            total_trades=0,
-            win_rate=0.0,
-            average_profit=0.0,
-            average_loss=0.0,
-            average_trade=0.0,
-            profit_factor=0.0,
-            maximum_drawdown=calculate_max_drawdown(equity_curve),
-            largest_winner=0.0,
-            largest_loser=0.0,
-            current_equity=current_equity,
-            roi_percent=((current_equity - initial_balance) / initial_balance) * 100,
-        )
+def calculate_stats(trades: List[Any], initial_balance: float) -> TradeStats:
+    closed = [t for t in trades if not t.is_open and t.pnl_usdt is not None]
+    stats = TradeStats()
+    stats.total_trades = len(closed)
+    if not closed:
+        return stats
 
-    frame = pd.DataFrame(trades)
-    profits = frame["profit_usdt"]
-    wins = profits[profits > 0]
-    losses = profits[profits < 0]
+    pnls = [t.pnl_usdt for t in closed]
+    stats.total_pnl = sum(pnls)
+    stats.winning_trades = sum(1 for p in pnls if p > 0)
+    stats.losing_trades = sum(1 for p in pnls if p <= 0)
+    stats.win_rate = (stats.winning_trades / stats.total_trades) * 100
+    stats.average_trade = stats.total_pnl / stats.total_trades
+    stats.best_trade = max(pnls)
+    stats.worst_trade = min(pnls)
+    stats.roi_percent = (stats.total_pnl / initial_balance) * 100 if initial_balance else 0.0
 
-    win_rate = (len(wins) / len(profits)) * 100 if len(profits) else 0.0
-    average_profit = wins.mean() if not wins.empty else 0.0
-    average_loss = losses.mean() if not losses.empty else 0.0
-    average_trade = profits.mean() if not profits.empty else 0.0
-    profit_factor = wins.sum() / abs(losses.sum()) if not losses.empty else 0.0
+    long_pnls = [t.pnl_usdt for t in closed if t.side == "LONG"]
+    short_pnls = [t.pnl_usdt for t in closed if t.side == "SHORT"]
+    stats.long_trades = len(long_pnls)
+    stats.short_trades = len(short_pnls)
+    stats.average_long = sum(long_pnls) / len(long_pnls) if long_pnls else 0.0
+    stats.average_short = sum(short_pnls) / len(short_pnls) if short_pnls else 0.0
 
-    return TradeStats(
-        total_trades=len(profits),
-        win_rate=win_rate,
-        average_profit=float(average_profit),
-        average_loss=float(average_loss),
-        average_trade=float(average_trade),
-        profit_factor=float(profit_factor),
-        maximum_drawdown=calculate_max_drawdown(equity_curve),
-        largest_winner=float(profits.max()),
-        largest_loser=float(profits.min()),
-        current_equity=current_equity,
-        roi_percent=((current_equity - initial_balance) / initial_balance) * 100,
-    )
+    stats.strong_trades = sum(1 for t in closed if "STRONG" in t.signal_type)
+    stats.weak_trades = sum(1 for t in closed if "weak" in t.signal_type)
+    stats.normal_trades = stats.total_trades - stats.strong_trades - stats.weak_trades
 
+    equity = initial_balance
+    curve: List[Dict[str, Any]] = []
+    for t in sorted(closed, key=lambda x: x.entry_time):
+        equity += t.pnl_usdt
+        curve.append({
+            "time": t.exit_time.isoformat() if t.exit_time else "",
+            "equity": round(equity, 4),
+        })
+    stats.equity_curve = curve
+    return stats

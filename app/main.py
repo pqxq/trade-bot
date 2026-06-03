@@ -1,4 +1,4 @@
-"""Application entrypoint for FastAPI and background services."""
+"""Application entrypoint."""
 from __future__ import annotations
 
 import sys
@@ -11,74 +11,54 @@ from loguru import logger
 from app import dashboard
 from app.config import Settings, load_settings
 from app.database import create_db_engine, create_session_factory, init_db
-from app.exchange import BinanceExchange
-from app.paper_trader import PaperTrader
+from app.exchange import BinanceFuturesExchange
+from app.trader import FuturesTrader
 from app.scheduler import RuntimeState, Scheduler
 from app.telegram_listener import TelegramListener
 
 
 @dataclass
 class AppContext:
-    """Container for application services."""
-
     settings: Settings
-    exchange: BinanceExchange
-    trader: PaperTrader
+    exchange: BinanceFuturesExchange
+    trader: FuturesTrader
     listener: TelegramListener
     scheduler: Scheduler
     state: RuntimeState
 
 
 def configure_logging(settings: Settings) -> None:
-    """Configure loguru logging."""
     settings.log_path.parent.mkdir(parents=True, exist_ok=True)
     logger.remove()
-    logger.add(
-        sys.stdout,
-        level="INFO",
-        enqueue=True,
-        backtrace=True,
-        diagnose=False,
-    )
-    logger.add(
-        settings.log_path,
-        rotation="10 MB",
-        retention="14 days",
-        level="INFO",
-        enqueue=True,
-        backtrace=True,
-        diagnose=False,
-    )
+    logger.add(sys.stdout, level="INFO", enqueue=True, backtrace=True, diagnose=False,
+        format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level:<8}</level> | {message}")
+    logger.add(settings.log_path, rotation="10 MB", retention="14 days",
+        level="DEBUG", enqueue=True, backtrace=True, diagnose=False)
 
 
 def create_app() -> FastAPI:
-    """Create and configure the FastAPI application."""
     settings = load_settings()
     configure_logging(settings)
+    logger.info("Starting Binance Futures Testnet Trading Platform")
+    logger.info("Symbol={} Leverage={} Testnet={}", settings.trading_symbol, settings.leverage, settings.binance_testnet)
 
     settings.data_dir.mkdir(parents=True, exist_ok=True)
-    settings.exports_dir.mkdir(parents=True, exist_ok=True)
-
     engine = create_db_engine(settings)
     session_factory = create_session_factory(engine)
     init_db(engine)
 
-    exchange = BinanceExchange()
-    trader = PaperTrader(settings, exchange)
+    exchange = BinanceFuturesExchange(settings)
+    trader = FuturesTrader(settings, exchange)
     trader.set_session_factory(session_factory)
 
     state = RuntimeState()
     listener = TelegramListener(settings, trader, state)
     scheduler = Scheduler(trader)
 
-    app = FastAPI()
+    app = FastAPI(title="Binance Futures Testnet Trader")
     app.state.context = AppContext(
-        settings=settings,
-        exchange=exchange,
-        trader=trader,
-        listener=listener,
-        scheduler=scheduler,
-        state=state,
+        settings=settings, exchange=exchange, trader=trader,
+        listener=listener, scheduler=scheduler, state=state,
     )
 
     dashboard.router.session_factory = session_factory
@@ -87,16 +67,14 @@ def create_app() -> FastAPI:
 
     @app.on_event("startup")
     async def on_startup() -> None:
-        """Start background services on app startup."""
-        logger.info("Starting trading platform")
-        await trader.ensure_initial_history()
+        logger.info("Initializing exchange connection…")
+        await exchange.initialize()
         await listener.start()
         await scheduler.start()
 
     @app.on_event("shutdown")
     async def on_shutdown() -> None:
-        """Shutdown background services on app stop."""
-        logger.info("Shutting down trading platform")
+        logger.info("Graceful shutdown…")
         await scheduler.stop()
         await listener.stop()
         await exchange.close()

@@ -11,8 +11,6 @@ from loguru import logger
 
 @dataclass(frozen=True)
 class SignalData:
-    """Parsed signal data."""
-
     signal_type: str
     indicator_value: float
     telegram_price: float
@@ -37,15 +35,23 @@ _SIGNAL_NORMALIZATION = {
     "weak sell": "weak sell",
 }
 
+# Signal → (side, risk_fraction)
+SIGNAL_MAPPING: dict[str, tuple[str, float]] = {
+    "STRONG BUY":  ("LONG",  1.00),
+    "BUY":         ("LONG",  0.50),
+    "weak buy":    ("LONG",  0.25),
+    "STRONG SELL": ("SHORT", 1.00),
+    "SELL":        ("SHORT", 0.50),
+    "weak sell":   ("SHORT", 0.25),
+}
+
 
 def normalize_signal_type(signal_raw: str) -> Optional[str]:
-    """Normalize the signal type to a canonical format."""
     key = signal_raw.strip().lower()
     return _SIGNAL_NORMALIZATION.get(key)
 
 
 def parse_signal(text: str, timestamp: datetime | None = None) -> SignalData | None:
-    """Parse a Telegram message into signal data if valid."""
     match = _SIGNAL_REGEX.search(text)
     if not match:
         return None
@@ -62,7 +68,7 @@ def parse_signal(text: str, timestamp: datetime | None = None) -> SignalData | N
         price = float(price_raw)
         indicator = float(indicator_raw)
     except ValueError:
-        logger.warning("Failed to parse numeric values in message: {}", text)
+        logger.warning("Failed to parse numeric values: {}", text)
         return None
 
     return SignalData(
@@ -72,4 +78,3 @@ def parse_signal(text: str, timestamp: datetime | None = None) -> SignalData | N
         timestamp=timestamp or datetime.utcnow(),
         raw_message=text,
     )
-
