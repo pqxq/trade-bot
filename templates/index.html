@@ -1,136 +1,116 @@
-<!DOCTYPE html>
-<html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Trading Dashboard</title>
-    <link
-      href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css"
-      rel="stylesheet"
-    />
-    <link href="/static/css/styles.css" rel="stylesheet" />
-    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
-  </head>
-  <body>
-    <nav class="navbar navbar-expand-lg navbar-dark bg-dark">
-      <div class="container-fluid">
-        <a class="navbar-brand" href="/">Signal Paper Trader</a>
-        <div class="navbar-nav">
-          <a class="nav-link" href="/trades">Trades</a>
-          <a class="nav-link" href="/stats">Statistics</a>
-        </div>
-      </div>
-    </nav>
+{% extends "base.html" %}
+{% set active = 'home' %}
+{% block title %}Dashboard{% endblock %}
 
-    <main class="container my-4">
-      <div class="row g-3">
-        <div class="col-md-3">
-          <div class="card shadow-sm">
-            <div class="card-body">
-              <div class="metric-label">Current Balance</div>
-              <div class="metric-value">${{ "%.2f"|format(current_balance) }}</div>
-            </div>
-          </div>
-        </div>
-        <div class="col-md-3">
-          <div class="card shadow-sm">
-            <div class="card-body">
-              <div class="metric-label">Total Profit</div>
-              <div class="metric-value">${{ "%.2f"|format(total_profit) }}</div>
-            </div>
-          </div>
-        </div>
-        <div class="col-md-3">
-          <div class="card shadow-sm">
-            <div class="card-body">
-              <div class="metric-label">Total Profit %</div>
-              <div class="metric-value">{{ "%.2f"|format(total_profit_percent) }}%</div>
-            </div>
-          </div>
-        </div>
-        <div class="col-md-3">
-          <div class="card shadow-sm">
-            <div class="card-body">
-              <div class="metric-label">Total Trades</div>
-              <div class="metric-value">{{ total_trades }}</div>
-            </div>
-          </div>
-        </div>
-      </div>
+{% block nav_extra %}
+  {% if bot_status == 'RUNNING' %}
+    <span class="status-badge status-running">&#9679; {{ bot_status }}</span>
+  {% elif bot_status in ('ERROR', 'AUTH_REQUIRED') %}
+    <span class="status-badge status-error">&#9679; {{ bot_status }}</span>
+  {% else %}
+    <span class="status-badge status-other">&#9679; {{ bot_status }}</span>
+  {% endif %}
+{% endblock %}
 
-      <div class="row g-3 mt-2">
-        <div class="col-md-3">
-          <div class="card shadow-sm">
-            <div class="card-body">
-              <div class="metric-label">Winning Trades</div>
-              <div class="metric-value">{{ winning_trades }}</div>
-            </div>
-          </div>
-        </div>
-        <div class="col-md-3">
-          <div class="card shadow-sm">
-            <div class="card-body">
-              <div class="metric-label">Losing Trades</div>
-              <div class="metric-value">{{ losing_trades }}</div>
-            </div>
-          </div>
-        </div>
-        <div class="col-md-3">
-          <div class="card shadow-sm">
-            <div class="card-body">
-              <div class="metric-label">Win Rate</div>
-              <div class="metric-value">{{ "%.2f"|format(win_rate) }}%</div>
-            </div>
-          </div>
-        </div>
-        <div class="col-md-3">
-          <div class="card shadow-sm">
-            <div class="card-body">
-              <div class="metric-label">Bot Status</div>
-              <div class="metric-value">{{ bot_status }}</div>
-            </div>
-          </div>
-        </div>
-      </div>
+{% block content %}
+<div class="page-header">
+  <h1>Dashboard</h1>
+  <p>Binance Futures Testnet &mdash; @intelligent_trading_signals &mdash; 1-min signals, 60s trades</p>
+</div>
 
-      <div class="row g-3 mt-3">
-        <div class="col-lg-8">
-          <div class="card shadow-sm">
-            <div class="card-body">
-              <h5 class="card-title">Equity Curve</h5>
-              <canvas id="equityChart" height="130"></canvas>
-            </div>
-          </div>
-        </div>
-        <div class="col-lg-4">
-          <div class="card shadow-sm mb-3">
-            <div class="card-body">
-              <h5 class="card-title">Current Open Position</h5>
-              {% if open_position %}
-              <div>Entry Time: {{ open_position.entry_time }}</div>
-              <div>Entry Price: {{ open_position.entry_price }}</div>
-              <div>Quantity: {{ open_position.quantity }}</div>
-              {% else %}
-              <div>No open position</div>
-              {% endif %}
-            </div>
-          </div>
-          <div class="card shadow-sm">
-            <div class="card-body">
-              <h5 class="card-title">Last Signal</h5>
-              {% if last_signal %}
-              <div>Time: {{ last_signal.timestamp }}</div>
-              <div>Type: {{ last_signal.signal_type }}</div>
-              <div>Indicator: {{ last_signal.indicator }}</div>
-              {% else %}
-              <div>No signals received yet</div>
-              {% endif %}
-            </div>
-          </div>
-        </div>
-      </div>
-    </main>
+<!-- Row 1: KPIs -->
+<div class="grid-4 mb-6">
+  <div class="card card-sm">
+    <div class="card-title">Futures Balance</div>
+    <div class="metric">{{ "%.2f"|format(balance) }} <span style="font-size:14px;color:var(--muted)">USDT</span></div>
+  </div>
+  <div class="card card-sm">
+    <div class="card-title">Total PnL</div>
+    <div class="metric {% if total_pnl >= 0 %}pos{% else %}neg{% endif %}">
+      {% if total_pnl >= 0 %}+{% endif %}{{ "%.4f"|format(total_pnl) }}
+      <span style="font-size:14px">USDT</span>
+    </div>
+    <div class="metric-sub">ROI {{ "%.2f"|format(roi) }}%</div>
+  </div>
+  <div class="card card-sm">
+    <div class="card-title">Win Rate</div>
+    <div class="metric {% if win_rate >= 50 %}pos{% else %}neg{% endif %}">{{ "%.1f"|format(win_rate) }}<span style="font-size:16px">%</span></div>
+    <div class="metric-sub">{{ winning_trades }}W / {{ losing_trades }}L</div>
+  </div>
+  <div class="card card-sm">
+    <div class="card-title">Trades</div>
+    <div class="metric">{{ total_trades }}</div>
+    <div class="metric-sub">{{ open_trades_count }} running now</div>
+  </div>
+</div>
 
-    <script src="/static/js/dashboard.js"></script>
-  </body>
-</html>
+<!-- Row 2: Avg trade + last signal + bot info -->
+<div class="grid-3 mb-6">
+  <div class="card card-sm">
+    <div class="card-title">Avg Trade</div>
+    <div class="metric metric-sm {% if avg_trade >= 0 %}pos{% else %}neg{% endif %}">
+      {% if avg_trade >= 0 %}+{% endif %}{{ "%.4f"|format(avg_trade) }} USDT
+    </div>
+  </div>
+  <div class="card card-sm">
+    <div class="card-title">Last Signal</div>
+    {% if last_signal %}
+      <div style="font-size:14px; font-family:var(--font-mono); color:var(--text)">{{ last_signal.signal_type }}</div>
+      <div class="metric-sub">{{ last_signal.timestamp.strftime('%H:%M:%S') if last_signal.timestamp else '' }}</div>
+    {% else %}
+      <div style="color:var(--muted); font-size:13px">No signals yet</div>
+    {% endif %}
+  </div>
+  <div class="card card-sm">
+    <div class="card-title">Bot Status</div>
+    <div style="font-family:var(--font-mono); font-size:14px; font-weight:700" class="{% if bot_status == 'RUNNING' %}pos{% elif bot_status in ('ERROR','AUTH_REQUIRED') %}neg{% else %}gold{% endif %}">{{ bot_status }}</div>
+    <div class="metric-sub">Channel: @intelligent_trading_signals</div>
+  </div>
+</div>
+
+<!-- Row 3: Running trades -->
+<div class="card">
+  <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:16px">
+    <div class="card-title" style="margin:0">Running Trades ({{ open_trades_count }})</div>
+    <a href="/live" style="font-size:13px; color:var(--primary)">Live view &rarr;</a>
+  </div>
+  {% if open_trades %}
+  <div class="tbl-wrap">
+    <table>
+      <thead><tr>
+        <th>#</th><th>Signal</th><th>Side</th><th>Qty</th><th>Lev</th>
+        <th>Entry</th><th>Entry Time</th><th>Remaining</th>
+      </tr></thead>
+      <tbody>
+      {% for t in open_trades %}
+      <tr>
+        <td>{{ t.id }}</td>
+        <td>
+          {% set s = t.signal_type %}
+          {% if s == 'STRONG BUY' %}<span class="sig sig-sb">STRONG BUY</span>
+          {% elif s == 'BUY' %}<span class="sig sig-b">BUY</span>
+          {% elif s == 'weak buy' %}<span class="sig sig-wb">weak buy</span>
+          {% elif s == 'STRONG SELL' %}<span class="sig sig-ss">STRONG SELL</span>
+          {% elif s == 'SELL' %}<span class="sig sig-s">SELL</span>
+          {% else %}<span class="sig sig-ws">weak sell</span>{% endif %}
+        </td>
+        <td class="{% if t.side == 'LONG' %}pos{% else %}neg{% endif %}">{{ t.side }}</td>
+        <td>{{ "%.4f"|format(t.quantity) }}</td>
+        <td>{{ t.leverage }}x</td>
+        <td>{{ "%.2f"|format(t.entry_price) }}</td>
+        <td>{{ t.entry_time[:19] }}</td>
+        <td class="gold">{{ t.remaining_seconds }}s</td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="empty">
+    <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="10"/><path d="M12 8v4l3 3"/></svg>
+    <h3>No open trades</h3>
+    <p>Trades will appear here when signals arrive</p>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

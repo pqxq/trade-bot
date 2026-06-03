@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{% block title %}Futures Trader{% endblock %} | BTC Testnet</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <style>
+    :root {
+      --bg:          #0d0f14;
+      --surface:     #131720;
+      --surface-2:   #1a2030;
+      --border:      rgba(255,255,255,0.07);
+      --text:        #e8eaf0;
+      --muted:       #7a8099;
+      --faint:       #3d4259;
+      --primary:     #4f9cf9;
+      --primary-dim: rgba(79,156,249,0.12);
+      --green:       #26a69a;
+      --green-dim:   rgba(38,166,154,0.12);
+      --red:         #ef5350;
+      --red-dim:     rgba(239,83,80,0.12);
+      --gold:        #ffd54f;
+      --gold-dim:    rgba(255,213,79,0.12);
+      --radius:      6px;
+      --font-mono:   'JetBrains Mono', 'Courier New', monospace;
+      --font-ui:     'Inter', system-ui, sans-serif;
+    }
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html { -webkit-font-smoothing: antialiased; font-size: 15px; }
+    body {
+      font-family: var(--font-ui);
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100dvh;
+      display: flex;
+      flex-direction: column;
+    }
+    a { color: var(--primary); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    /* ── NAV ─────────────────────────────────────────────── */
+    .nav {
+      display: flex;
+      align-items: center;
+      gap: 0;
+      height: 52px;
+      padding: 0 24px;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      position: sticky;
+      top: 0;
+      z-index: 100;
+    }
+    .nav-brand {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-weight: 700;
+      font-size: 15px;
+      color: var(--text);
+      margin-right: 32px;
+      text-decoration: none;
+    }
+    .nav-brand svg { flex-shrink: 0; }
+    .nav-links { display: flex; gap: 2px; }
+    .nav-link {
+      padding: 6px 14px;
+      border-radius: var(--radius);
+      font-size: 13.5px;
+      font-weight: 500;
+      color: var(--muted);
+      transition: color 0.15s, background 0.15s;
+    }
+    .nav-link:hover { color: var(--text); background: var(--surface-2); text-decoration: none; }
+    .nav-link.active { color: var(--primary); background: var(--primary-dim); }
+    .nav-spacer { flex: 1; }
+    .status-badge {
+      font-size: 12px;
+      font-family: var(--font-mono);
+      padding: 3px 10px;
+      border-radius: 20px;
+      font-weight: 500;
+    }
+    .status-running  { background: var(--green-dim);   color: var(--green); }
+    .status-error    { background: var(--red-dim);     color: var(--red); }
+    .status-other    { background: var(--gold-dim);    color: var(--gold); }
+
+    /* ── LAYOUT ──────────────────────────────────────────── */
+    .page { flex: 1; max-width: 1400px; width: 100%; margin: 0 auto; padding: 28px 24px; }
+    .page-header { margin-bottom: 24px; }
+    .page-header h1 { font-size: 20px; font-weight: 700; color: var(--text); }
+    .page-header p  { font-size: 13px; color: var(--muted); margin-top: 4px; }
+
+    /* ── GRID ────────────────────────────────────────────── */
+    .grid-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; }
+    .grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    @media (max-width: 900px) {
+      .grid-4 { grid-template-columns: repeat(2, 1fr); }
+      .grid-3 { grid-template-columns: 1fr 1fr; }
+    }
+    @media (max-width: 600px) {
+      .grid-4, .grid-3, .grid-2 { grid-template-columns: 1fr; }
+      .page { padding: 16px 12px; }
+    }
+
+    /* ── CARD ────────────────────────────────────────────── */
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 20px;
+    }
+    .card-sm { padding: 14px 18px; }
+    .card-title {
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--muted);
+      margin-bottom: 8px;
+    }
+    .metric {
+      font-family: var(--font-mono);
+      font-size: 26px;
+      font-weight: 700;
+      line-height: 1;
+      color: var(--text);
+    }
+    .metric-sm { font-size: 18px; }
+    .metric-sub { font-size: 12px; color: var(--muted); margin-top: 5px; }
+
+    /* ── COLOR HELPERS ───────────────────────────────────── */
+    .pos  { color: var(--green) !important; }
+    .neg  { color: var(--red)   !important; }
+    .neut { color: var(--muted) !important; }
+    .gold { color: var(--gold)  !important; }
+    .pri  { color: var(--primary) !important; }
+
+    /* ── SIGNAL BADGES ───────────────────────────────────── */
+    .sig {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 11px;
+      font-weight: 700;
+      font-family: var(--font-mono);
+      letter-spacing: 0.04em;
+    }
+    .sig-sb  { background: rgba(38,166,154,0.25); color: #26a69a; }
+    .sig-b   { background: rgba(38,166,154,0.15); color: #4db6ac; }
+    .sig-wb  { background: rgba(38,166,154,0.08); color: #80cbc4; }
+    .sig-ss  { background: rgba(239,83,80,0.25);  color: #ef5350; }
+    .sig-s   { background: rgba(239,83,80,0.15);  color: #e57373; }
+    .sig-ws  { background: rgba(239,83,80,0.08);  color: #ef9a9a; }
+
+    /* ── TABLE ───────────────────────────────────────────── */
+    .tbl-wrap { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    thead th {
+      padding: 8px 12px;
+      text-align: left;
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--muted);
+      border-bottom: 1px solid var(--border);
+      white-space: nowrap;
+    }
+    tbody td {
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--border);
+      font-family: var(--font-mono);
+      font-size: 12.5px;
+      white-space: nowrap;
+    }
+    tbody tr:last-child td { border-bottom: none; }
+    tbody tr:hover td { background: var(--surface-2); }
+
+    /* ── SECTION SPACING ─────────────────────────────────── */
+    .mb-4  { margin-bottom: 16px; }
+    .mb-6  { margin-bottom: 24px; }
+    .mb-8  { margin-bottom: 32px; }
+    .mt-6  { margin-top: 24px; }
+    .gap-4 { gap: 16px; }
+
+    /* ── CHART CONTAINER ─────────────────────────────────── */
+    .chart-wrap { position: relative; height: 260px; }
+    .chart-wrap-lg { position: relative; height: 340px; }
+
+    /* ── EMPTY STATE ─────────────────────────────────────── */
+    .empty {
+      text-align: center;
+      padding: 48px 24px;
+      color: var(--muted);
+    }
+    .empty svg { margin: 0 auto 16px; opacity: 0.3; }
+    .empty h3  { font-size: 15px; font-weight: 600; color: var(--text); margin-bottom: 6px; }
+    .empty p   { font-size: 13px; }
+
+    /* ── PAGINATION ──────────────────────────────────────── */
+    .pagination { display: flex; gap: 4px; align-items: center; justify-content: flex-end; margin-top: 16px; }
+    .page-btn {
+      padding: 5px 11px;
+      border-radius: var(--radius);
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      color: var(--text);
+      font-size: 13px;
+      cursor: pointer;
+      font-family: var(--font-ui);
+    }
+    .page-btn:hover { background: var(--primary-dim); color: var(--primary); }
+    .page-btn.cur   { background: var(--primary-dim); color: var(--primary); font-weight: 700; }
+    .page-btn[disabled] { opacity: 0.35; cursor: default; }
+  </style>
+  {% block head %}{% endblock %}
+</head>
+<body>
+  <nav class="nav">
+    <a class="nav-brand" href="/">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#4f9cf9" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/>
+        <polyline points="16 7 22 7 22 13"/>
+      </svg>
+      BTC Futures Testnet
+    </a>
+    <div class="nav-links">
+      <a class="nav-link {% if active == 'home' %}active{% endif %}" href="/">Dashboard</a>
+      <a class="nav-link {% if active == 'live' %}active{% endif %}" href="/live">Live Trades</a>
+      <a class="nav-link {% if active == 'trades' %}active{% endif %}" href="/trades">History</a>
+      <a class="nav-link {% if active == 'stats' %}active{% endif %}" href="/stats">Statistics</a>
+    </div>
+    <div class="nav-spacer"></div>
+    {% block nav_extra %}{% endblock %}
+  </nav>
+  <main class="page">
+    {% block content %}{% endblock %}
+  </main>
+  {% block scripts %}{% endblock %}
+</body>
+</html>

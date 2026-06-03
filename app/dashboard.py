@@ -19,13 +19,18 @@ templates = Jinja2Templates(directory="templates")
 
 
 def _sf() -> sessionmaker[Session]:
-    return router.session_factory
+    return router.session_factory  # type: ignore[attr-defined]
 
 
 def _fetch_open_trades() -> List[Trade]:
     def op() -> List[Trade]:
         with session_scope(_sf()) as s:
-            return s.query(Trade).filter(Trade.is_open == True).order_by(Trade.entry_time.desc()).all()  # noqa: E712
+            return (
+                s.query(Trade)
+                .filter(Trade.is_open == True)  # noqa: E712
+                .order_by(Trade.entry_time.desc())
+                .all()
+            )
     return run_with_retry(op)
 
 
@@ -36,7 +41,9 @@ def _fetch_all_trades() -> List[Trade]:
     return run_with_retry(op)
 
 
-def _fetch_closed_trades(offset: int, limit: int, sort_col: str, sort_order: str) -> tuple[List[Trade], int]:
+def _fetch_closed_trades(
+    offset: int, limit: int, sort_col: str, sort_order: str
+) -> tuple[List[Trade], int]:
     def op() -> tuple[List[Trade], int]:
         with session_scope(_sf()) as s:
             q = s.query(Trade).filter(Trade.is_open == False)  # noqa: E712
@@ -56,7 +63,11 @@ def _fetch_last_signal() -> Signal | None:
 
 def _trade_dict(trade: Trade) -> Dict[str, Any]:
     now = datetime.now(timezone.utc)
-    entry = trade.entry_time.replace(tzinfo=timezone.utc) if trade.entry_time.tzinfo is None else trade.entry_time
+    entry = (
+        trade.entry_time.replace(tzinfo=timezone.utc)
+        if trade.entry_time.tzinfo is None
+        else trade.entry_time
+    )
     elapsed = (now - entry).total_seconds()
     remaining = max(0.0, 60.0 - elapsed)
     return {
@@ -96,14 +107,24 @@ async def index(request: Request) -> HTMLResponse:
     except Exception:
         balance = 0.0
     roi = (total_pnl / balance * 100) if balance else 0.0
-    return templates.TemplateResponse(request=request, name="index.html", context={
-        "balance": balance, "total_pnl": total_pnl, "roi": roi,
-        "total_trades": total_trades, "winning_trades": winning, "losing_trades": losing,
-        "win_rate": win_rate, "avg_trade": avg_trade,
-        "open_trades_count": len(open_trades), "last_signal": last_signal,
-        "bot_status": ctx.state.bot_status,
-        "open_trades": [_trade_dict(t) for t in open_trades],
-    })
+    return templates.TemplateResponse(
+        request=request,
+        name="index.html",
+        context={
+            "balance": balance,
+            "total_pnl": total_pnl,
+            "roi": roi,
+            "total_trades": total_trades,
+            "winning_trades": winning,
+            "losing_trades": losing,
+            "win_rate": win_rate,
+            "avg_trade": avg_trade,
+            "open_trades_count": len(open_trades),
+            "last_signal": last_signal,
+            "bot_status": ctx.state.bot_status,
+            "open_trades": [_trade_dict(t) for t in open_trades],
+        },
+    )
 
 
 @router.get("/live", response_class=HTMLResponse)
@@ -112,20 +133,33 @@ async def live_page(request: Request) -> HTMLResponse:
 
 
 @router.get("/trades", response_class=HTMLResponse)
-async def trades_page(request: Request,
-    page: int = Query(1, ge=1), per_page: int = Query(20, ge=1, le=200),
-    sort: str = Query("entry_time"), order: str = Query("desc"),
+async def trades_page(
+    request: Request,
+    page: int = Query(1, ge=1),
+    per_page: int = Query(20, ge=1, le=200),
+    sort: str = Query("entry_time"),
+    order: str = Query("desc"),
 ) -> HTMLResponse:
     allowed = {"entry_time", "exit_time", "pnl_usdt", "pnl_percent", "side", "signal_type"}
     sort_col = sort if sort in allowed else "entry_time"
     sort_order = "desc" if order == "desc" else "asc"
     offset = (page - 1) * per_page
-    trades, total = await asyncio.to_thread(_fetch_closed_trades, offset, per_page, sort_col, sort_order)
+    trades, total = await asyncio.to_thread(
+        _fetch_closed_trades, offset, per_page, sort_col, sort_order
+    )
     total_pages = max(1, (total + per_page - 1) // per_page)
-    return templates.TemplateResponse(request=request, name="trades.html", context={
-        "trades": [_trade_dict(t) for t in trades], "page": page, "per_page": per_page,
-        "total_pages": total_pages, "sort": sort_col, "order": sort_order,
-    })
+    return templates.TemplateResponse(
+        request=request,
+        name="trades.html",
+        context={
+            "trades": [_trade_dict(t) for t in trades],
+            "page": page,
+            "per_page": per_page,
+            "total_pages": total_pages,
+            "sort": sort_col,
+            "order": sort_order,
+        },
+    )
 
 
 @router.get("/stats", response_class=HTMLResponse)
@@ -137,19 +171,27 @@ async def stats_page(request: Request) -> HTMLResponse:
     except Exception:
         initial = 100.0
     stats = calculate_stats(all_trades, initial_balance=initial)
-    return templates.TemplateResponse(request=request, name="stats.html", context={"stats": stats})
+    return templates.TemplateResponse(
+        request=request,
+        name="stats.html",
+        context={"stats": stats},
+    )
 
 
 @router.get("/api/live-trades")
 async def api_live_trades(request: Request) -> JSONResponse:
     ctx = request.app.state.context
     open_trades = await asyncio.to_thread(_fetch_open_trades)
-    result = []
+    result: List[Dict[str, Any]] = []
     for t in open_trades:
         d = _trade_dict(t)
         try:
             price = await ctx.exchange.get_price()
-            pnl = ((price - t.entry_price) if t.side == "LONG" else (t.entry_price - price)) * t.quantity * t.leverage
+            pnl = (
+                (price - t.entry_price)
+                if t.side == "LONG"
+                else (t.entry_price - price)
+            ) * t.quantity * t.leverage
             d["current_price"] = price
             d["current_pnl"] = round(pnl, 4)
         except Exception:

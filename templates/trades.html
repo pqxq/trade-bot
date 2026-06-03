@@ -1,88 +1,81 @@
-<!DOCTYPE html>
-<html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Trade History</title>
-    <link
-      href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css"
-      rel="stylesheet"
-    />
-    <link href="/static/css/styles.css" rel="stylesheet" />
-  </head>
-  <body>
-    <nav class="navbar navbar-expand-lg navbar-dark bg-dark">
-      <div class="container-fluid">
-        <a class="navbar-brand" href="/">Signal Paper Trader</a>
-        <div class="navbar-nav">
-          <a class="nav-link active" href="/trades">Trades</a>
-          <a class="nav-link" href="/stats">Statistics</a>
-        </div>
-      </div>
-    </nav>
+{% extends "base.html" %}
+{% set active = 'trades' %}
+{% block title %}Trade History{% endblock %}
 
-    <main class="container my-4">
-      <h3>Trade History</h3>
-      <div class="table-responsive">
-        <table class="table table-striped">
-          <thead>
-            <tr>
-              <th>
-                <a href="?page=1&per_page={{ per_page }}&sort=entry_time&order={{ 'asc' if order == 'desc' else 'desc' }}">
-                  Entry Time
-                </a>
-              </th>
-              <th>
-                <a href="?page=1&per_page={{ per_page }}&sort=exit_time&order={{ 'asc' if order == 'desc' else 'desc' }}">
-                  Exit Time
-                </a>
-              </th>
-              <th>Entry Price</th>
-              <th>Exit Price</th>
-              <th>Quantity</th>
-              <th>
-                <a href="?page=1&per_page={{ per_page }}&sort=profit_usdt&order={{ 'asc' if order == 'desc' else 'desc' }}">
-                  Profit USDT
-                </a>
-              </th>
-              <th>
-                <a href="?page=1&per_page={{ per_page }}&sort=profit_percent&order={{ 'asc' if order == 'desc' else 'desc' }}">
-                  Profit %
-                </a>
-              </th>
-              <th>Duration (min)</th>
-            </tr>
-          </thead>
-          <tbody>
-            {% for trade in trades %}
-            <tr>
-              <td>{{ trade.entry_time }}</td>
-              <td>{{ trade.exit_time }}</td>
-              <td>{{ "%.2f"|format(trade.entry_price) }}</td>
-              <td>{{ "%.2f"|format(trade.exit_price) }}</td>
-              <td>{{ "%.6f"|format(trade.quantity) }}</td>
-              <td>{{ "%.2f"|format(trade.profit_usdt) }}</td>
-              <td>{{ "%.2f"|format(trade.profit_percent) }}%</td>
-              <td>{{ "%.2f"|format(trade.duration_minutes) }}</td>
-            </tr>
-            {% endfor %}
-          </tbody>
-        </table>
-      </div>
+{% block content %}
+<div class="page-header">
+  <h1>Trade History</h1>
+  <p>All completed trades &mdash; sorted by {{ sort }}, {{ order }}</p>
+</div>
 
-      <nav>
-        <ul class="pagination">
-          <li class="page-item {% if page <= 1 %}disabled{% endif %}">
-            <a class="page-link" href="?page={{ page - 1 }}&per_page={{ per_page }}&sort={{ sort }}&order={{ order }}">Previous</a>
-          </li>
-          <li class="page-item disabled">
-            <span class="page-link">Page {{ page }} of {{ total_pages }}</span>
-          </li>
-          <li class="page-item {% if page >= total_pages %}disabled{% endif %}">
-            <a class="page-link" href="?page={{ page + 1 }}&per_page={{ per_page }}&sort={{ sort }}&order={{ order }}">Next</a>
-          </li>
-        </ul>
-      </nav>
-    </main>
-  </body>
-</html>
+<div class="card">
+  {% if trades %}
+  <div class="tbl-wrap">
+    <table>
+      <thead><tr>
+        <th>#</th>
+        <th><a href="/trades?sort=entry_time&order={% if sort=='entry_time' and order=='desc' %}asc{% else %}desc{% endif %}" style="color:{% if sort=='entry_time' %}var(--primary){% else %}var(--muted){% endif %}">Entry Time</a></th>
+        <th><a href="/trades?sort=exit_time&order={% if sort=='exit_time' and order=='desc' %}asc{% else %}desc{% endif %}" style="color:{% if sort=='exit_time' %}var(--primary){% else %}var(--muted){% endif %}">Exit Time</a></th>
+        <th><a href="/trades?sort=signal_type&order={% if sort=='signal_type' and order=='desc' %}asc{% else %}desc{% endif %}" style="color:{% if sort=='signal_type' %}var(--primary){% else %}var(--muted){% endif %}">Signal</a></th>
+        <th><a href="/trades?sort=side&order={% if sort=='side' and order=='desc' %}asc{% else %}desc{% endif %}" style="color:{% if sort=='side' %}var(--primary){% else %}var(--muted){% endif %}">Side</a></th>
+        <th>Entry $</th>
+        <th>Exit $</th>
+        <th>Dur.</th>
+        <th><a href="/trades?sort=pnl_usdt&order={% if sort=='pnl_usdt' and order=='desc' %}asc{% else %}desc{% endif %}" style="color:{% if sort=='pnl_usdt' %}var(--primary){% else %}var(--muted){% endif %}">PnL USDT</a></th>
+        <th><a href="/trades?sort=pnl_percent&order={% if sort=='pnl_percent' and order=='desc' %}asc{% else %}desc{% endif %}" style="color:{% if sort=='pnl_percent' %}var(--primary){% else %}var(--muted){% endif %}">PnL %</a></th>
+        <th>Order ID</th>
+      </tr></thead>
+      <tbody>
+      {% for t in trades %}
+      <tr>
+        <td style="color:var(--muted)">{{ t.id }}</td>
+        <td>{{ t.entry_time[:19] }}</td>
+        <td>{{ t.exit_time[:19] if t.exit_time else '-' }}</td>
+        <td>
+          {% set s = t.signal_type %}
+          {% if s == 'STRONG BUY' %}<span class="sig sig-sb">STRONG BUY</span>
+          {% elif s == 'BUY' %}<span class="sig sig-b">BUY</span>
+          {% elif s == 'weak buy' %}<span class="sig sig-wb">weak buy</span>
+          {% elif s == 'STRONG SELL' %}<span class="sig sig-ss">STRONG SELL</span>
+          {% elif s == 'SELL' %}<span class="sig sig-s">SELL</span>
+          {% else %}<span class="sig sig-ws">weak sell</span>{% endif %}
+        </td>
+        <td class="{% if t.side == 'LONG' %}pos{% else %}neg{% endif %}">{{ t.side }}</td>
+        <td>{{ "%.2f"|format(t.entry_price) }}</td>
+        <td>{{ "%.2f"|format(t.exit_price) if t.exit_price else '-' }}</td>
+        <td>{{ "%.0f"|format(t.duration_seconds) if t.duration_seconds else '-' }}s</td>
+        <td class="{% if t.pnl_usdt and t.pnl_usdt >= 0 %}pos{% elif t.pnl_usdt %}neg{% endif %}">
+          {% if t.pnl_usdt %}{% if t.pnl_usdt >= 0 %}+{% endif %}{{ "%.4f"|format(t.pnl_usdt) }}{% else %}-{% endif %}
+        </td>
+        <td class="{% if t.pnl_percent and t.pnl_percent >= 0 %}pos{% elif t.pnl_percent %}neg{% endif %}">
+          {% if t.pnl_percent %}{% if t.pnl_percent >= 0 %}+{% endif %}{{ "%.2f"|format(t.pnl_percent) }}%{% else %}-{% endif %}
+        </td>
+        <td style="font-size:11px; color:var(--muted)">{{ t.binance_order_id[:12] if t.binance_order_id else '-' }}...</td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <!-- Pagination -->
+  <div class="pagination">
+    {% if page > 1 %}
+      <a href="/trades?page={{ page-1 }}&sort={{ sort }}&order={{ order }}&per_page={{ per_page }}" class="page-btn">&laquo;</a>
+    {% else %}
+      <button class="page-btn" disabled>&laquo;</button>
+    {% endif %}
+    <span class="page-btn cur">{{ page }} / {{ total_pages }}</span>
+    {% if page < total_pages %}
+      <a href="/trades?page={{ page+1 }}&sort={{ sort }}&order={{ order }}&per_page={{ per_page }}" class="page-btn">&raquo;</a>
+    {% else %}
+      <button class="page-btn" disabled>&raquo;</button>
+    {% endif %}
+  </div>
+  {% else %}
+  <div class="empty">
+    <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2"/><rect x="9" y="3" width="6" height="4" rx="1"/></svg>
+    <h3>No completed trades yet</h3>
+    <p>Trades will appear here after they close (60 seconds each)</p>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

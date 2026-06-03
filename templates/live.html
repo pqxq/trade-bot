@@ -1,0 +1,134 @@
+{% extends "base.html" %}
+{% set active = 'live' %}
+{% block title %}Live Trades{% endblock %}
+
+{% block head %}
+<style>
+  .trade-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 16px 20px;
+    display: grid;
+    grid-template-columns: 44px 1fr 1fr 1fr 1fr 1fr 1fr 110px;
+    align-items: center;
+    gap: 12px;
+    font-family: var(--font-mono);
+    font-size: 13px;
+    transition: border-color 0.2s;
+  }
+  .trade-card:hover { border-color: rgba(79,156,249,0.3); }
+  .trade-id {
+    font-size: 12px;
+    color: var(--muted);
+    font-weight: 700;
+    text-align: center;
+  }
+  .col-label { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.07em; color: var(--muted); margin-bottom: 3px; font-family: var(--font-ui); }
+  .col-val   { font-size: 13.5px; font-weight: 700; }
+  .timer-bar {
+    height: 3px;
+    border-radius: 2px;
+    background: var(--faint);
+    margin-top: 4px;
+    overflow: hidden;
+  }
+  .timer-fill {
+    height: 100%;
+    border-radius: 2px;
+    background: linear-gradient(90deg, var(--green), var(--primary));
+    transition: width 1s linear;
+  }
+  .live-dot {
+    display: inline-block;
+    width: 7px; height: 7px;
+    background: var(--green);
+    border-radius: 50%;
+    animation: pulse 1.5s ease-in-out infinite;
+    margin-right: 6px;
+  }
+  @keyframes pulse {
+    0%,100% { opacity:1; transform:scale(1); }
+    50%      { opacity:0.5; transform:scale(0.8); }
+  }
+  .refresh-info { font-size: 12px; color: var(--muted); }
+  #last-update { font-family: var(--font-mono); }
+  @media (max-width: 900px) {
+    .trade-card { grid-template-columns: 1fr 1fr; }
+  }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="page-header" style="display:flex; align-items:center; justify-content:space-between">
+  <div>
+    <h1><span class="live-dot"></span>Live Trades</h1>
+    <p>Auto-refreshes every 5 seconds &mdash; each trade closes at 60s</p>
+  </div>
+  <div class="refresh-info">Last update: <span id="last-update">-</span></div>
+</div>
+
+<div id="trades-container"></div>
+<div id="empty-state" class="card empty" style="display:none">
+  <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="10"/><path d="M12 8v4l3 3"/></svg>
+  <h3>No open trades</h3>
+  <p>Waiting for the next signal from @intelligent_trading_signals...</p>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  function sigClass(s) {
+    const m = { 'STRONG BUY':'sig-sb','BUY':'sig-b','weak buy':'sig-wb','STRONG SELL':'sig-ss','SELL':'sig-s','weak sell':'sig-ws' };
+    return m[s] || 'sig-b';
+  }
+  function fmt(n, d=2) {
+    if (n === null || n === undefined) return '<span class="neut">-</span>';
+    const v = parseFloat(n);
+    const cls = v >= 0 ? 'pos' : 'neg';
+    const sign = v >= 0 ? '+' : '';
+    return `<span class="${cls}">${sign}${v.toFixed(d)}</span>`;
+  }
+  function renderTrade(t) {
+    const pct = Math.max(0, Math.min(100, (t.remaining_seconds / 60) * 100));
+    const remainCls = t.remaining_seconds <= 10 ? 'neg' : t.remaining_seconds <= 30 ? 'gold' : 'pos';
+    return `<div class="trade-card" id="tc-${t.id}">
+      <div class="trade-id">#${t.id}</div>
+      <div><div class="col-label">Signal</div><div class="col-val"><span class="sig ${sigClass(t.signal_type)}">${t.signal_type}</span></div></div>
+      <div><div class="col-label">Side</div><div class="col-val ${t.side==='LONG'?'pos':'neg'}">${t.side}</div></div>
+      <div><div class="col-label">Qty / Lev</div><div class="col-val">${parseFloat(t.quantity).toFixed(4)} &times; ${t.leverage}x</div></div>
+      <div><div class="col-label">Entry Price</div><div class="col-val">${parseFloat(t.entry_price).toFixed(2)}</div></div>
+      <div><div class="col-label">Current Price</div><div class="col-val">${t.current_price ? parseFloat(t.current_price).toFixed(2) : '<span class="neut">-</span>'}</div></div>
+      <div><div class="col-label">Current PnL</div><div class="col-val">${fmt(t.current_pnl, 4)} USDT</div></div>
+      <div>
+        <div class="col-label">Remaining</div>
+        <div class="col-val ${remainCls}">${t.remaining_seconds}s</div>
+        <div class="timer-bar"><div class="timer-fill" style="width:${pct}%"></div></div>
+      </div>
+    </div>`;
+  }
+
+  async function refresh() {
+    try {
+      const r = await fetch('/api/live-trades');
+      const data = await r.json();
+      const container = document.getElementById('trades-container');
+      const empty = document.getElementById('empty-state');
+      if (!data.length) {
+        container.innerHTML = '';
+        empty.style.display = 'block';
+      } else {
+        empty.style.display = 'none';
+        container.innerHTML = '<div style="display:flex;flex-direction:column;gap:10px">' +
+          data.map(renderTrade).join('') + '</div>';
+      }
+      document.getElementById('last-update').textContent = new Date().toLocaleTimeString();
+    } catch(e) {
+      console.error('Refresh error', e);
+    }
+  }
+
+  refresh();
+  setInterval(refresh, 5000);
+</script>
+{% endblock %}
