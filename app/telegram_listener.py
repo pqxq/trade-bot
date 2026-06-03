@@ -1,0 +1,100 @@
+"""Telegram listener implementation using Telethon."""
+from __future__ import annotations
+
+import asyncio
+from datetime import datetime
+from typing import Optional
+
+from loguru import logger
+from telethon import TelegramClient, events, errors
+
+from app.config import Settings
+from app.paper_trader import PaperTrader
+from app.scheduler import RuntimeState
+from app.signal_parser import parse_signal
+
+
+class TelegramListener:
+    """Listen to Telegram channel messages and process trading signals."""
+
+    def __init__(self, settings: Settings, trader: PaperTrader, state: RuntimeState) -> None:
+        """Create a Telegram listener instance."""
+        self._settings = settings
+        self._trader = trader
+        self._state = state
+        self._client = TelegramClient(
+            str(settings.session_path),
+            settings.api_id,
+            settings.api_hash,
+        )
+        self._task: Optional[asyncio.Task[None]] = None
+        self._stop_event = asyncio.Event()
+
+    async def start(self) -> None:
+        """Start the listener in the background."""
+        if self._task and not self._task.done():
+            return
+        self._stop_event.clear()
+        self._task = asyncio.create_task(self._run(), name="telegram-listener")
+
+    async def stop(self) -> None:
+        """Stop the listener."""
+        self._stop_event.set()
+        if self._task:
+            self._task.cancel()
+            try:
+                await self._task
+            except asyncio.CancelledError:
+                pass
+        await self._client.disconnect()
+
+    async def _run(self) -> None:
+        """Run the Telegram connection loop with reconnection."""
+        backoff = 1
+        while not self._stop_event.is_set():
+            try:
+                self._state.bot_status = "CONNECTING"
+                await self._client.connect()
+                if not await self._client.is_user_authorized():
+                    self._state.bot_status = "AUTH_REQUIRED"
+                    logger.error("Telegram authorization required. Please create session file.")
+                    await asyncio.sleep(10)
+                    continue
+                self._state.bot_status = "RUNNING"
+                logger.info("Telegram listener connected")
+                self._client.remove_event_handler(self._on_message)
+                self._client.add_event_handler(
+                    self._on_message,
+                    events.NewMessage(chats=self._settings.channel_name),
+                )
+                await self._client.run_until_disconnected()
+                backoff = 1
+            except errors.FloodWaitError as exc:
+                self._state.bot_status = f"FLOOD_WAIT_{exc.seconds}"
+                logger.warning("Flood wait: sleeping for {} seconds", exc.seconds)
+                await asyncio.sleep(exc.seconds)
+            except Exception as exc:
+                self._state.bot_status = "ERROR"
+                logger.exception("Telegram listener error: {}", exc)
+                await asyncio.sleep(min(backoff, 60))
+                backoff = min(backoff * 2, 60)
+            finally:
+                await self._client.disconnect()
+                if not self._stop_event.is_set():
+                    self._state.bot_status = "RECONNECTING"
+                    logger.info("Telegram listener reconnecting")
+
+    async def _on_message(self, event: events.NewMessage.Event) -> None:
+        """Handle incoming Telegram messages."""
+        text = event.raw_text or ""
+        timestamp = event.date or datetime.utcnow()
+        signal = parse_signal(text, timestamp=timestamp)
+        if not signal:
+            return
+
+        self._state.last_signal_time = signal.timestamp
+        self._state.last_signal_type = signal.signal_type
+        self._state.last_signal_raw = signal.raw_message
+
+        logger.info("Received signal: {} {}", signal.signal_type, signal.telegram_price)
+        await self._trader.handle_signal(signal)

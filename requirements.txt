@@ -1,0 +1,12 @@
+telethon
+ccxt
+fastapi
+uvicorn[standard]
+sqlalchemy
+pandas
+plotly
+jinja2
+python-dotenv
+loguru
+aiofiles
+pytest
