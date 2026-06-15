@@ -31,10 +31,15 @@ class Trade(Base):
     quantity: Mapped[float] = mapped_column(Float, nullable=False)
     entry_price: Mapped[float] = mapped_column(Float, nullable=False)
     entry_time: Mapped[datetime] = mapped_column(DateTime, index=True, nullable=False)
+    # Risk management levels set at trade open
+    sl_price: Mapped[float | None] = mapped_column(Float, nullable=True)   # stop-loss price
+    tp_price: Mapped[float | None] = mapped_column(Float, nullable=True)   # take-profit price
+    # Close data
     exit_price: Mapped[float | None] = mapped_column(Float, nullable=True)
     exit_time: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     duration_seconds: Mapped[float | None] = mapped_column(Float, nullable=True)
     pnl_usdt: Mapped[float | None] = mapped_column(Float, nullable=True)
     pnl_percent: Mapped[float | None] = mapped_column(Float, nullable=True)
+    close_reason: Mapped[str | None] = mapped_column(String(8), nullable=True)  # SL / TP / TIME
     binance_order_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     is_open: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
