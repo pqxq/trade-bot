@@ -1,4 +1,4 @@
-"""Binance Futures live trading engine — improved version.
+"""Binance Futures live trading engine.
 
 Improvements over original pqxq/trade-bot:
   1. Configurable trade duration (was hardcoded 60s)
@@ -8,7 +8,9 @@ Improvements over original pqxq/trade-bot:
   5. Max concurrent positions guard
   6. Daily loss limit emergency stop
   7. Fee-aware PnL calculation (open + close taker fees)
-  8. Close reason tracked (SL / TP / TIME)
+  8. close_reason saved to DB (SL / TP / TIME)          ← fixed
+  9. Orphaned trade recovery on startup                  ← new
+ 10. Shared price cache — one HTTP call/s max            ← new
 """
 from __future__ import annotations
 
@@ -25,6 +27,11 @@ from app.exchange import BinanceFuturesExchange
 from app.models import Signal, Trade
 from app.signal_parser import SIGNAL_MAPPING, SignalData
 
+# Shared price cache — updated once per second by a background task.
+# All monitor coroutines read from here instead of each making their own request.
+_price_cache: Dict[str, float] = {}
+_price_cache_lock = asyncio.Lock()
+
 
 class FuturesTrader:
 
@@ -33,15 +40,95 @@ class FuturesTrader:
         self._exchange = exchange
         self._session_factory: Optional[sessionmaker[Session]] = None
 
-        # In-memory guards (reset on restart — acceptable for this use case)
+        # In-memory guards
         self._last_signal_time: Dict[str, datetime] = {}
         self._daily_pnl: float = 0.0
         self._daily_pnl_date: date = date.today()
+        self._price_updater_task: Optional[asyncio.Task] = None
 
     def set_session_factory(self, session_factory: sessionmaker[Session]) -> None:
         self._session_factory = session_factory
 
-    # ── Public API ───────────────────────────────────────────────────
+    # ── Startup / Shutdown ────────────────────────────────────────────
+
+    async def start(self) -> None:
+        """Start background tasks and recover any orphaned open trades."""
+        self._price_updater_task = asyncio.create_task(
+            self._price_updater_loop(), name="price-updater"
+        )
+        await self._restore_open_trades()
+
+    async def stop(self) -> None:
+        if self._price_updater_task:
+            self._price_updater_task.cancel()
+            try:
+                await self._price_updater_task
+            except asyncio.CancelledError:
+                pass
+
+    async def _price_updater_loop(self) -> None:
+        """Refresh shared price cache once per second."""
+        symbol = self._settings.trading_symbol
+        while True:
+            try:
+                price = await self._exchange.get_price(symbol)
+                async with _price_cache_lock:
+                    _price_cache[symbol] = price
+            except Exception as exc:
+                logger.debug("Price updater error: {}", exc)
+            await asyncio.sleep(1)
+
+    async def _get_cached_price(self) -> float:
+        """Return last cached price (or fetch directly if cache is empty)."""
+        symbol = self._settings.trading_symbol
+        async with _price_cache_lock:
+            cached = _price_cache.get(symbol)
+        if cached is not None:
+            return cached
+        return await self._exchange.get_price(symbol)
+
+    async def _restore_open_trades(self) -> None:
+        """On startup, re-attach monitor tasks for any trades still marked is_open=True.
+
+        This handles the case where the bot crashed / restarted while a trade
+        was open — without this the trade would never be closed.
+        """
+        open_trades = await self.get_open_trades()
+        if not open_trades:
+            return
+        logger.warning(
+            "Found {} orphaned open trade(s) in DB — restoring monitors.",
+            len(open_trades),
+        )
+        now = datetime.now(timezone.utc)
+        for trade in open_trades:
+            entry_tz = (
+                trade.entry_time.replace(tzinfo=timezone.utc)
+                if trade.entry_time.tzinfo is None
+                else trade.entry_time
+            )
+            elapsed = (now - entry_tz).total_seconds()
+            remaining = max(0, self._settings.trade_duration_seconds - int(elapsed))
+
+            # Rebuild SL/TP from stored values (or recalculate if missing)
+            sl = trade.sl_price
+            tp = trade.tp_price
+            if sl is None or tp is None:
+                sl, tp = self._compute_sl_tp(trade.entry_price, trade.side)
+
+            logger.info(
+                "Restoring monitor for trade #{} | {} | elapsed={}s remaining={}s SL={} TP={}",
+                trade.id, trade.side, int(elapsed), remaining, sl, tp,
+            )
+            asyncio.create_task(
+                self._monitor_trade(
+                    trade.id, trade.entry_price, trade.side, sl, tp,
+                    override_deadline=remaining,
+                ),
+                name=f"monitor-{trade.id}",
+            )
+
+    # ── Public API ────────────────────────────────────────────────────
 
     async def handle_signal(self, signal: SignalData) -> None:
         logger.info("Signal received: {} price={}", signal.signal_type, signal.telegram_price)
@@ -95,14 +182,14 @@ class FuturesTrader:
     async def get_all_trades(self) -> List[Trade]:
         return await asyncio.to_thread(self._fetch_all_trades)
 
-    # ── Trade lifecycle ──────────────────────────────────────────────
+    # ── Trade lifecycle ───────────────────────────────────────────────
 
     async def _open_trade(self, signal: SignalData) -> None:
         side_label, risk_fraction = SIGNAL_MAPPING[signal.signal_type]
 
         try:
             balance = await self._exchange.get_futures_balance()
-            current_price = await self._exchange.get_price()
+            current_price = await self._get_cached_price()
         except Exception as exc:
             logger.error("Pre-trade data fetch failed: {}", exc)
             return
@@ -168,9 +255,11 @@ class FuturesTrader:
         side: str,
         sl_price: float,
         tp_price: float,
+        override_deadline: Optional[int] = None,
     ) -> None:
-        """Poll price every second; close on SL / TP / trailing stop / time limit."""
-        deadline = self._settings.trade_duration_seconds
+        """Watch price every second; close on SL / TP / trailing stop / time limit."""
+        deadline = override_deadline if override_deadline is not None \
+            else self._settings.trade_duration_seconds
         trailing_pct = self._settings.trailing_stop_pct
 
         best_price = entry_price
@@ -185,7 +274,7 @@ class FuturesTrader:
                 return
 
             try:
-                price = await self._exchange.get_price()
+                price = await self._get_cached_price()
             except Exception:
                 continue
 
@@ -194,11 +283,11 @@ class FuturesTrader:
                 if side == "LONG" and price > best_price:
                     best_price = price
                     sl_price = round(best_price * (1.0 - trailing_pct), 2)
-                    logger.debug("Trailing SL updated to {} for trade #{}", sl_price, trade_id)
+                    logger.debug("Trailing SL -> {} for trade #{}", sl_price, trade_id)
                 elif side == "SHORT" and price < best_price:
                     best_price = price
                     sl_price = round(best_price * (1.0 + trailing_pct), 2)
-                    logger.debug("Trailing SL updated to {} for trade #{}", sl_price, trade_id)
+                    logger.debug("Trailing SL -> {} for trade #{}", sl_price, trade_id)
 
             sl_hit = (side == "LONG" and price <= sl_price) or \
                      (side == "SHORT" and price >= sl_price)
@@ -236,7 +325,7 @@ class FuturesTrader:
         exit_price = float(order.get("average") or order.get("price") or 0.0)
         if exit_price == 0.0:
             try:
-                exit_price = await self._exchange.get_price()
+                exit_price = await self._get_cached_price()
             except Exception:
                 exit_price = trade.entry_price
 
@@ -253,36 +342,31 @@ class FuturesTrader:
         else:
             gross_pnl = (trade.entry_price - exit_price) * trade.quantity * trade.leverage
 
-        # Subtract taker fees for both legs (open + close)
         fee_pct = self._settings.taker_fee_pct
         fees = notional_entry * fee_pct * 2
         pnl_usdt = gross_pnl - fees
         pnl_percent = (pnl_usdt / notional_entry * 100.0) if notional_entry else 0.0
 
-        # Accumulate daily PnL for emergency stop
         self._daily_pnl += pnl_usdt
 
         await asyncio.to_thread(
             self._update_trade_close,
-            trade_id, exit_price, exit_time, duration_seconds, pnl_usdt, pnl_percent,
+            trade_id, exit_price, exit_time, duration_seconds,
+            pnl_usdt, pnl_percent, reason,
         )
 
         logger.info(
-            "Trade #{} CLOSED ({}) | exit={} pnl={:.4f} USDT ({:.2f}%) dur={}s | "
-            "daily_pnl={:.2f}",
+            "Trade #{} CLOSED ({}) | exit={} pnl={:.4f} USDT ({:.2f}%) dur={}s | daily_pnl={:.2f}",
             trade_id, reason, exit_price, pnl_usdt, pnl_percent,
             int(duration_seconds), self._daily_pnl,
         )
 
-    # ── Helpers ──────────────────────────────────────────────────────
+    # ── DB helpers ────────────────────────────────────────────────────
 
     def _refresh_daily_pnl(self) -> None:
         today = date.today()
         if today != self._daily_pnl_date:
-            logger.info(
-                "New trading day — resetting daily PnL (was {:.2f} USDT).",
-                self._daily_pnl,
-            )
+            logger.info("New trading day — resetting daily PnL (was {:.2f} USDT).", self._daily_pnl)
             self._daily_pnl = 0.0
             self._daily_pnl_date = today
 
@@ -338,6 +422,7 @@ class FuturesTrader:
         duration_seconds: float,
         pnl_usdt: float,
         pnl_percent: float,
+        close_reason: str,
     ) -> None:
         def op() -> None:
             with session_scope(self._session_factory) as s:
@@ -348,6 +433,7 @@ class FuturesTrader:
                     t.duration_seconds = duration_seconds
                     t.pnl_usdt = pnl_usdt
                     t.pnl_percent = pnl_percent
+                    t.close_reason = close_reason
                     t.is_open = False
         run_with_retry(op)
 
