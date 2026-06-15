@@ -37,12 +37,12 @@ _SIGNAL_NORMALIZATION = {
 
 # Signal → (side, risk_fraction)
 SIGNAL_MAPPING: dict[str, tuple[str, float]] = {
-    "STRONG BUY":  ("LONG",  1.00),
-    "BUY":         ("LONG",  0.50),
-    "weak buy":    ("LONG",  0.25),
-    "STRONG SELL": ("SHORT", 1.00),
-    "SELL":        ("SHORT", 0.50),
-    "weak sell":   ("SHORT", 0.25),
+    "STRONG BUY":  ("LONG",  0.90),
+    "BUY":         ("LONG",  0.60),
+    "weak buy":    ("LONG",  0.30),
+    "STRONG SELL": ("SHORT", 0.90),
+    "SELL":        ("SHORT", 0.60),
+    "weak sell":   ("SHORT", 0.30),
 }
 
 

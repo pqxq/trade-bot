@@ -1,13 +1,20 @@
-"""Binance Futures live trading engine.
+"""Binance Futures live trading engine — improved version.
 
-Every signal opens an independent trade that auto-closes after 60 seconds.
-Multiple simultaneous positions are fully supported.
+Improvements over original pqxq/trade-bot:
+  1. Configurable trade duration (was hardcoded 60s)
+  2. Stop-loss (SL) and take-profit (TP) per trade
+  3. Trailing stop-loss support
+  4. Signal cooldown per side (prevents spam entries)
+  5. Max concurrent positions guard
+  6. Daily loss limit emergency stop
+  7. Fee-aware PnL calculation (open + close taker fees)
+  8. Close reason tracked (SL / TP / TIME)
 """
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
-from typing import List
+from datetime import datetime, timezone, date
+from typing import Dict, List, Optional, Tuple
 
 from loguru import logger
 from sqlalchemy.orm import Session, sessionmaker
@@ -18,27 +25,65 @@ from app.exchange import BinanceFuturesExchange
 from app.models import Signal, Trade
 from app.signal_parser import SIGNAL_MAPPING, SignalData
 
-TRADE_DURATION_SECONDS: int = 60
-
 
 class FuturesTrader:
 
     def __init__(self, settings: Settings, exchange: BinanceFuturesExchange) -> None:
         self._settings = settings
         self._exchange = exchange
-        self._session_factory: sessionmaker[Session] | None = None
+        self._session_factory: Optional[sessionmaker[Session]] = None
+
+        # In-memory guards (reset on restart — acceptable for this use case)
+        self._last_signal_time: Dict[str, datetime] = {}
+        self._daily_pnl: float = 0.0
+        self._daily_pnl_date: date = date.today()
 
     def set_session_factory(self, session_factory: sessionmaker[Session]) -> None:
         self._session_factory = session_factory
 
-    # ── Public ─────────────────────────────────────────────────────────
+    # ── Public API ───────────────────────────────────────────────────
 
     async def handle_signal(self, signal: SignalData) -> None:
         logger.info("Signal received: {} price={}", signal.signal_type, signal.telegram_price)
         await asyncio.to_thread(self._store_signal, signal)
+
         if signal.signal_type not in SIGNAL_MAPPING:
-            logger.info("Signal '{}' not in mapping — skipping.", signal.signal_type)
+            logger.info("Signal '{}' not in SIGNAL_MAPPING — skipping.", signal.signal_type)
             return
+
+        # Guard 1: daily loss emergency stop
+        self._refresh_daily_pnl()
+        if self._daily_pnl <= -abs(self._settings.daily_loss_limit_usdt):
+            logger.warning(
+                "EMERGENCY STOP — daily loss {:.2f} USDT reached limit {:.2f} USDT. "
+                "No new trades until tomorrow.",
+                self._daily_pnl, self._settings.daily_loss_limit_usdt,
+            )
+            return
+
+        # Guard 2: concurrent position cap
+        open_trades = await self.get_open_trades()
+        if len(open_trades) >= self._settings.max_concurrent_trades:
+            logger.info(
+                "Max concurrent trades ({}) reached — skipping.",
+                self._settings.max_concurrent_trades,
+            )
+            return
+
+        # Guard 3: cooldown per side
+        side_label, _ = SIGNAL_MAPPING[signal.signal_type]
+        now = datetime.now(timezone.utc)
+        last = self._last_signal_time.get(side_label)
+        if last:
+            elapsed = (now - last).total_seconds()
+            if elapsed < self._settings.signal_cooldown_seconds:
+                logger.info(
+                    "Cooldown active for {} ({:.0f}s / {}s) — skipping.",
+                    side_label, elapsed, self._settings.signal_cooldown_seconds,
+                )
+                return
+
+        self._last_signal_time[side_label] = now
         await self._open_trade(signal)
 
     async def get_futures_balance(self) -> float:
@@ -50,7 +95,7 @@ class FuturesTrader:
     async def get_all_trades(self) -> List[Trade]:
         return await asyncio.to_thread(self._fetch_all_trades)
 
-    # ── Trade lifecycle ────────────────────────────────────────────────
+    # ── Trade lifecycle ──────────────────────────────────────────────
 
     async def _open_trade(self, signal: SignalData) -> None:
         side_label, risk_fraction = SIGNAL_MAPPING[signal.signal_type]
@@ -69,7 +114,7 @@ class FuturesTrader:
 
         if quantity <= 0:
             logger.warning(
-                "Quantity=0 (balance={} risk={} lev={} price={}) — skipping.",
+                "Quantity=0 (balance={:.2f} risk={} lev={} price={}) — skipping.",
                 balance, risk_fraction, leverage, current_price,
             )
             return
@@ -86,26 +131,92 @@ class FuturesTrader:
         filled_price = float(order.get("average") or order.get("price") or current_price)
         binance_order_id = str(order.get("id", ""))
 
+        sl_price, tp_price = self._compute_sl_tp(filled_price, side_label)
+
         trade = await asyncio.to_thread(
             self._create_trade,
-            signal, side_label, quantity, filled_price, entry_time, binance_order_id,
+            signal, side_label, quantity, filled_price,
+            entry_time, binance_order_id, sl_price, tp_price,
         )
 
         logger.info(
-            "Trade #{} OPEN — {} {} qty={} entry={} order_id={}",
-            trade.id, side_label, signal.signal_type, quantity, filled_price, binance_order_id,
+            "Trade #{} OPEN | {} {} qty={} entry={} SL={} TP={} order_id={}",
+            trade.id, side_label, signal.signal_type,
+            quantity, filled_price, sl_price, tp_price, binance_order_id,
         )
 
         asyncio.create_task(
-            self._schedule_close(trade.id, entry_time),
-            name=f"auto-close-{trade.id}",
+            self._monitor_trade(trade.id, filled_price, side_label, sl_price, tp_price),
+            name=f"monitor-{trade.id}",
         )
 
-    async def _schedule_close(self, trade_id: int, entry_time: datetime) -> None:
-        await asyncio.sleep(TRADE_DURATION_SECONDS)
-        await self._close_trade(trade_id)
+    def _compute_sl_tp(self, entry_price: float, side: str) -> Tuple[float, float]:
+        sl_pct = self._settings.stop_loss_pct
+        tp_pct = self._settings.take_profit_pct
+        if side == "LONG":
+            sl = entry_price * (1.0 - sl_pct)
+            tp = entry_price * (1.0 + tp_pct)
+        else:
+            sl = entry_price * (1.0 + sl_pct)
+            tp = entry_price * (1.0 - tp_pct)
+        return round(sl, 2), round(tp, 2)
 
-    async def _close_trade(self, trade_id: int) -> None:
+    async def _monitor_trade(
+        self,
+        trade_id: int,
+        entry_price: float,
+        side: str,
+        sl_price: float,
+        tp_price: float,
+    ) -> None:
+        """Poll price every second; close on SL / TP / trailing stop / time limit."""
+        deadline = self._settings.trade_duration_seconds
+        trailing_pct = self._settings.trailing_stop_pct
+
+        best_price = entry_price
+        elapsed = 0
+
+        while elapsed < deadline:
+            await asyncio.sleep(1)
+            elapsed += 1
+
+            trade = await asyncio.to_thread(self._fetch_trade_by_id, trade_id)
+            if trade is None or not trade.is_open:
+                return
+
+            try:
+                price = await self._exchange.get_price()
+            except Exception:
+                continue
+
+            # Update trailing stop
+            if trailing_pct > 0:
+                if side == "LONG" and price > best_price:
+                    best_price = price
+                    sl_price = round(best_price * (1.0 - trailing_pct), 2)
+                    logger.debug("Trailing SL updated to {} for trade #{}", sl_price, trade_id)
+                elif side == "SHORT" and price < best_price:
+                    best_price = price
+                    sl_price = round(best_price * (1.0 + trailing_pct), 2)
+                    logger.debug("Trailing SL updated to {} for trade #{}", sl_price, trade_id)
+
+            sl_hit = (side == "LONG" and price <= sl_price) or \
+                     (side == "SHORT" and price >= sl_price)
+            tp_hit = (side == "LONG" and price >= tp_price) or \
+                     (side == "SHORT" and price <= tp_price)
+
+            if sl_hit:
+                logger.warning("Trade #{} SL HIT @ {} (SL={})", trade_id, price, sl_price)
+                await self._close_trade(trade_id, reason="SL")
+                return
+            if tp_hit:
+                logger.info("Trade #{} TP HIT @ {} (TP={})", trade_id, price, tp_price)
+                await self._close_trade(trade_id, reason="TP")
+                return
+
+        await self._close_trade(trade_id, reason="TIME")
+
+    async def _close_trade(self, trade_id: int, reason: str = "TIME") -> None:
         trade = await asyncio.to_thread(self._fetch_trade_by_id, trade_id)
         if trade is None or not trade.is_open:
             logger.debug("Trade #{} already closed.", trade_id)
@@ -129,16 +240,27 @@ class FuturesTrader:
             except Exception:
                 exit_price = trade.entry_price
 
-        entry_tz = trade.entry_time.replace(tzinfo=timezone.utc) if trade.entry_time.tzinfo is None else trade.entry_time
+        entry_tz = (
+            trade.entry_time.replace(tzinfo=timezone.utc)
+            if trade.entry_time.tzinfo is None
+            else trade.entry_time
+        )
         duration_seconds = (exit_time - entry_tz).total_seconds()
         notional_entry = trade.entry_price * trade.quantity
 
         if trade.side == "LONG":
-            pnl_usdt = (exit_price - trade.entry_price) * trade.quantity * trade.leverage
+            gross_pnl = (exit_price - trade.entry_price) * trade.quantity * trade.leverage
         else:
-            pnl_usdt = (trade.entry_price - exit_price) * trade.quantity * trade.leverage
+            gross_pnl = (trade.entry_price - exit_price) * trade.quantity * trade.leverage
 
-        pnl_percent = (pnl_usdt / notional_entry * 100) if notional_entry else 0.0
+        # Subtract taker fees for both legs (open + close)
+        fee_pct = self._settings.taker_fee_pct
+        fees = notional_entry * fee_pct * 2
+        pnl_usdt = gross_pnl - fees
+        pnl_percent = (pnl_usdt / notional_entry * 100.0) if notional_entry else 0.0
+
+        # Accumulate daily PnL for emergency stop
+        self._daily_pnl += pnl_usdt
 
         await asyncio.to_thread(
             self._update_trade_close,
@@ -146,11 +268,23 @@ class FuturesTrader:
         )
 
         logger.info(
-            "Trade #{} CLOSED — exit={} pnl={:.4f} USDT ({:.2f}%) duration={}s",
-            trade_id, exit_price, pnl_usdt, pnl_percent, int(duration_seconds),
+            "Trade #{} CLOSED ({}) | exit={} pnl={:.4f} USDT ({:.2f}%) dur={}s | "
+            "daily_pnl={:.2f}",
+            trade_id, reason, exit_price, pnl_usdt, pnl_percent,
+            int(duration_seconds), self._daily_pnl,
         )
 
-    # ── DB helpers ─────────────────────────────────────────────────────
+    # ── Helpers ──────────────────────────────────────────────────────
+
+    def _refresh_daily_pnl(self) -> None:
+        today = date.today()
+        if today != self._daily_pnl_date:
+            logger.info(
+                "New trading day — resetting daily PnL (was {:.2f} USDT).",
+                self._daily_pnl,
+            )
+            self._daily_pnl = 0.0
+            self._daily_pnl_date = today
 
     def _store_signal(self, signal: SignalData) -> None:
         def op() -> None:
@@ -165,8 +299,15 @@ class FuturesTrader:
         run_with_retry(op)
 
     def _create_trade(
-        self, signal: SignalData, side: str, quantity: float,
-        entry_price: float, entry_time: datetime, binance_order_id: str,
+        self,
+        signal: SignalData,
+        side: str,
+        quantity: float,
+        entry_price: float,
+        entry_time: datetime,
+        binance_order_id: str,
+        sl_price: float,
+        tp_price: float,
     ) -> Trade:
         def op() -> Trade:
             with session_scope(self._session_factory) as s:
@@ -179,6 +320,8 @@ class FuturesTrader:
                     entry_price=entry_price,
                     entry_time=entry_time,
                     binance_order_id=binance_order_id,
+                    sl_price=sl_price,
+                    tp_price=tp_price,
                     is_open=True,
                 )
                 s.add(trade)
@@ -188,8 +331,13 @@ class FuturesTrader:
         return run_with_retry(op)
 
     def _update_trade_close(
-        self, trade_id: int, exit_price: float, exit_time: datetime,
-        duration_seconds: float, pnl_usdt: float, pnl_percent: float,
+        self,
+        trade_id: int,
+        exit_price: float,
+        exit_time: datetime,
+        duration_seconds: float,
+        pnl_usdt: float,
+        pnl_percent: float,
     ) -> None:
         def op() -> None:
             with session_scope(self._session_factory) as s:

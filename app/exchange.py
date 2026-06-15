@@ -10,36 +10,20 @@ from loguru import logger
 
 from app.config import Settings
 
-# Binance Futures Demo Trading base URLs
-# (replaces the deprecated testnet.binancefuture.com sandbox)
-_DEMO_URLS = {
-    "fapiPublic": "https://testnet.binancefuture.com/fapi/v1",
-    "fapiPublicV2": "https://testnet.binancefuture.com/fapi/v2",
-    "fapiPublicV3": "https://testnet.binancefuture.com/fapi/v3",
-    "fapiPrivate": "https://testnet.binancefuture.com/fapi/v1",
-    "fapiPrivateV2": "https://testnet.binancefuture.com/fapi/v2",
-    "fapiPrivateV3": "https://testnet.binancefuture.com/fapi/v3",
-    "fapiData": "https://testnet.binancefuture.com/futures/data",
-}
-
-
 class BinanceFuturesExchange:
 
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
 
-        # Use binanceusdm — the dedicated USD-M futures subclass.
-        # Do NOT use ccxt.binance with defaultType='future' anymore.
         self._exchange: ccxt.binanceusdm = ccxt.binanceusdm(
             {
                 "apiKey": settings.binance_api_key,
                 "secret": settings.binance_api_secret,
                 "enableRateLimit": True,
-                "urls": {"api": _DEMO_URLS},
             }
         )
         # set_sandbox_mode on binanceusdm switches URLs to demo endpoints
-        self._exchange.set_sandbox_mode(True)
+        self._exchange.enable_demo_trading(True)
         self._markets: Dict[str, Any] | None = None
 
     async def initialize(self) -> None:
