@@ -30,17 +30,24 @@ class AppContext:
 def configure_logging(settings: Settings) -> None:
     settings.log_path.parent.mkdir(parents=True, exist_ok=True)
     logger.remove()
-    logger.add(sys.stdout, level="INFO", enqueue=True, backtrace=True, diagnose=False,
-        format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level:<8}</level> | {message}")
-    logger.add(settings.log_path, rotation="10 MB", retention="14 days",
-        level="DEBUG", enqueue=True, backtrace=True, diagnose=False)
+    logger.add(
+        sys.stdout, level="INFO", enqueue=True, backtrace=True, diagnose=False,
+        format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level:<8}</level> | {message}",
+    )
+    logger.add(
+        settings.log_path, rotation="10 MB", retention="14 days",
+        level="DEBUG", enqueue=True, backtrace=True, diagnose=False,
+    )
 
 
 def create_app() -> FastAPI:
     settings = load_settings()
     configure_logging(settings)
     logger.info("Starting Binance Futures Testnet Trading Platform")
-    logger.info("Symbol={} Leverage={} Testnet={}", settings.trading_symbol, settings.leverage, settings.binance_testnet)
+    logger.info(
+        "Symbol={} Leverage={} Testnet={}",
+        settings.trading_symbol, settings.leverage, settings.binance_testnet,
+    )
 
     settings.data_dir.mkdir(parents=True, exist_ok=True)
     engine = create_db_engine(settings)
@@ -69,6 +76,8 @@ def create_app() -> FastAPI:
     async def on_startup() -> None:
         logger.info("Initializing exchange connection…")
         await exchange.initialize()
+        # Start price updater + recover orphaned open trades from previous run
+        await trader.start()
         await listener.start()
         await scheduler.start()
 
@@ -77,6 +86,7 @@ def create_app() -> FastAPI:
         logger.info("Graceful shutdown…")
         await scheduler.stop()
         await listener.stop()
+        await trader.stop()
         await exchange.close()
 
     return app
