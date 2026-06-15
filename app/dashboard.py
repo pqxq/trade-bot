@@ -1,4 +1,14 @@
-"""FastAPI routes for the web dashboard."""
+"""FastAPI routes for the web dashboard.
+
+Fixes vs previous version:
+  1. _trade_dict: remaining_seconds now uses settings.trade_duration_seconds
+     (was hardcoded to 60.0)
+  2. /api/live-trades: uses shared price cache via trader._get_cached_price()
+     instead of exchange.get_price() per trade
+  3. /stats and /api/stats: pass current_price to calculate_stats()
+     so unrealized_pnl is populated
+  4. _trade_dict: exposes sl_price, tp_price and close_reason fields
+"""
 from __future__ import annotations
 
 import asyncio
@@ -61,7 +71,14 @@ def _fetch_last_signal() -> Signal | None:
     return run_with_retry(op)
 
 
-def _trade_dict(trade: Trade) -> Dict[str, Any]:
+def _trade_dict(trade: Trade, duration_seconds: int = 60) -> Dict[str, Any]:
+    """Serialise a Trade to a plain dict.
+
+    Args:
+        trade: ORM object.
+        duration_seconds: configured TRADE_DURATION_SECONDS — used to compute
+            the countdown timer correctly (fix for hardcoded 60s bug).
+    """
     now = datetime.now(timezone.utc)
     entry = (
         trade.entry_time.replace(tzinfo=timezone.utc)
@@ -69,7 +86,8 @@ def _trade_dict(trade: Trade) -> Dict[str, Any]:
         else trade.entry_time
     )
     elapsed = (now - entry).total_seconds()
-    remaining = max(0.0, 60.0 - elapsed)
+    # BUG FIX #1: was hardcoded 60.0 — now uses the configured duration
+    remaining = max(0.0, duration_seconds - elapsed)
     return {
         "id": trade.id,
         "signal_type": trade.signal_type,
@@ -77,21 +95,27 @@ def _trade_dict(trade: Trade) -> Dict[str, Any]:
         "quantity": trade.quantity,
         "leverage": trade.leverage,
         "entry_price": trade.entry_price,
+        "sl_price": trade.sl_price,
+        "tp_price": trade.tp_price,
         "entry_time": entry.isoformat(),
         "exit_price": trade.exit_price,
         "exit_time": trade.exit_time.isoformat() if trade.exit_time else None,
         "duration_seconds": trade.duration_seconds,
         "pnl_usdt": trade.pnl_usdt,
         "pnl_percent": trade.pnl_percent,
+        "close_reason": getattr(trade, "close_reason", None),
         "binance_order_id": trade.binance_order_id,
         "is_open": trade.is_open,
         "remaining_seconds": round(remaining, 1),
     }
 
 
+# ── Pages ────────────────────────────────────────────────────────────────────
+
 @router.get("/", response_class=HTMLResponse)
 async def index(request: Request) -> HTMLResponse:
     ctx = request.app.state.context
+    duration = ctx.settings.trade_duration_seconds
     all_trades = await asyncio.to_thread(_fetch_all_trades)
     open_trades = [t for t in all_trades if t.is_open]
     closed = [t for t in all_trades if not t.is_open and t.pnl_usdt is not None]
@@ -122,7 +146,7 @@ async def index(request: Request) -> HTMLResponse:
             "open_trades_count": len(open_trades),
             "last_signal": last_signal,
             "bot_status": ctx.state.bot_status,
-            "open_trades": [_trade_dict(t) for t in open_trades],
+            "open_trades": [_trade_dict(t, duration) for t in open_trades],
         },
     )
 
@@ -140,6 +164,8 @@ async def trades_page(
     sort: str = Query("entry_time"),
     order: str = Query("desc"),
 ) -> HTMLResponse:
+    ctx = request.app.state.context
+    duration = ctx.settings.trade_duration_seconds
     allowed = {"entry_time", "exit_time", "pnl_usdt", "pnl_percent", "side", "signal_type"}
     sort_col = sort if sort in allowed else "entry_time"
     sort_order = "desc" if order == "desc" else "asc"
@@ -152,7 +178,7 @@ async def trades_page(
         request=request,
         name="trades.html",
         context={
-            "trades": [_trade_dict(t) for t in trades],
+            "trades": [_trade_dict(t, duration) for t in trades],
             "page": page,
             "per_page": per_page,
             "total_pages": total_pages,
@@ -170,7 +196,12 @@ async def stats_page(request: Request) -> HTMLResponse:
         initial = await ctx.trader.get_futures_balance()
     except Exception:
         initial = 100.0
-    stats = calculate_stats(all_trades, initial_balance=initial)
+    # BUG FIX #3: pass current_price so unrealized_pnl is computed
+    try:
+        current_price = await ctx.trader._get_cached_price()
+    except Exception:
+        current_price = 0.0
+    stats = calculate_stats(all_trades, initial_balance=initial, current_price=current_price)
     return templates.TemplateResponse(
         request=request,
         name="stats.html",
@@ -178,15 +209,24 @@ async def stats_page(request: Request) -> HTMLResponse:
     )
 
 
+# ── API endpoints ────────────────────────────────────────────────────────────
+
 @router.get("/api/live-trades")
 async def api_live_trades(request: Request) -> JSONResponse:
     ctx = request.app.state.context
+    duration = ctx.settings.trade_duration_seconds
     open_trades = await asyncio.to_thread(_fetch_open_trades)
     result: List[Dict[str, Any]] = []
+
+    # BUG FIX #2: fetch price ONCE from shared cache, not once per trade
+    try:
+        price = await ctx.trader._get_cached_price()
+    except Exception:
+        price = None
+
     for t in open_trades:
-        d = _trade_dict(t)
-        try:
-            price = await ctx.exchange.get_price()
+        d = _trade_dict(t, duration)
+        if price is not None:
             pnl = (
                 (price - t.entry_price)
                 if t.side == "LONG"
@@ -194,7 +234,7 @@ async def api_live_trades(request: Request) -> JSONResponse:
             ) * t.quantity * t.leverage
             d["current_price"] = price
             d["current_pnl"] = round(pnl, 4)
-        except Exception:
+        else:
             d["current_price"] = None
             d["current_pnl"] = None
         result.append(d)
@@ -209,7 +249,12 @@ async def api_stats(request: Request) -> JSONResponse:
         initial = await ctx.trader.get_futures_balance()
     except Exception:
         initial = 100.0
-    stats = calculate_stats(all_trades, initial)
+    # BUG FIX #3: pass current_price so unrealized_pnl is populated
+    try:
+        current_price = await ctx.trader._get_cached_price()
+    except Exception:
+        current_price = 0.0
+    stats = calculate_stats(all_trades, initial, current_price=current_price)
     return JSONResponse(stats.__dict__)
 
 
