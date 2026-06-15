@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from loguru import logger
@@ -51,7 +51,6 @@ class TelegramListener:
             pass
 
     async def _run(self) -> None:
-        """Run the Telegram connection loop with automatic reconnection."""
         backoff = 1
         while not self._stop_event.is_set():
             try:
@@ -100,7 +99,12 @@ class TelegramListener:
     async def _on_message(self, event: events.NewMessage.Event) -> None:
         """Handle incoming Telegram messages."""
         text: str = event.raw_text or ""
-        timestamp: datetime = event.date or datetime.utcnow()
+
+        # FIX: datetime.utcnow() is deprecated and returns a naive datetime.
+        # event.date from Telethon is already timezone-aware (UTC).
+        # Fallback uses datetime.now(timezone.utc) instead.
+        timestamp: datetime = event.date or datetime.now(timezone.utc)
+
         signal = parse_signal(text, timestamp=timestamp)
         if not signal:
             return
