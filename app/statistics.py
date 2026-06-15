@@ -23,13 +23,36 @@ class TradeStats:
     worst_trade: float = 0.0
     total_pnl: float = 0.0
     roi_percent: float = 0.0
+    # Close reason breakdown (new)
+    sl_count: int = 0
+    tp_count: int = 0
+    time_count: int = 0
+    # Unrealized PnL across open positions (new)
+    unrealized_pnl: float = 0.0
+    open_trades_count: int = 0
     equity_curve: List[Dict[str, Any]] = field(default_factory=list)
 
 
-def calculate_stats(trades: List[Any], initial_balance: float) -> TradeStats:
+def calculate_stats(
+    trades: List[Any],
+    initial_balance: float,
+    current_price: float = 0.0,
+) -> TradeStats:
     closed = [t for t in trades if not t.is_open and t.pnl_usdt is not None]
+    open_trades = [t for t in trades if t.is_open]
     stats = TradeStats()
     stats.total_trades = len(closed)
+    stats.open_trades_count = len(open_trades)
+
+    # Unrealized PnL for open positions (requires current_price)
+    if current_price > 0:
+        for t in open_trades:
+            if t.side == "LONG":
+                stats.unrealized_pnl += (current_price - t.entry_price) * t.quantity * t.leverage
+            else:
+                stats.unrealized_pnl += (t.entry_price - current_price) * t.quantity * t.leverage
+        stats.unrealized_pnl = round(stats.unrealized_pnl, 4)
+
     if not closed:
         return stats
 
@@ -53,6 +76,11 @@ def calculate_stats(trades: List[Any], initial_balance: float) -> TradeStats:
     stats.strong_trades = sum(1 for t in closed if "STRONG" in t.signal_type)
     stats.weak_trades = sum(1 for t in closed if "weak" in t.signal_type)
     stats.normal_trades = stats.total_trades - stats.strong_trades - stats.weak_trades
+
+    # Close reason breakdown
+    stats.sl_count = sum(1 for t in closed if getattr(t, "close_reason", None) == "SL")
+    stats.tp_count = sum(1 for t in closed if getattr(t, "close_reason", None) == "TP")
+    stats.time_count = sum(1 for t in closed if getattr(t, "close_reason", None) == "TIME")
 
     equity = initial_balance
     curve: List[Dict[str, Any]] = []
