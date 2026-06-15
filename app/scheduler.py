@@ -10,15 +10,19 @@ The Scheduler no longer duplicates that logic, which eliminates:
 The Scheduler now only:
   1. Keeps RuntimeState.bot_status up-to-date
   2. Provides a start/stop interface used by main.py
+  3. Logs a heartbeat every 60 s
 """
 from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from loguru import logger
+
+if TYPE_CHECKING:
+    from app.trader import FuturesTrader
 
 
 @dataclass
@@ -31,7 +35,7 @@ class RuntimeState:
 
 class Scheduler:
 
-    def __init__(self, trader: "FuturesTrader") -> None:  # noqa: F821
+    def __init__(self, trader: "FuturesTrader") -> None:
         self._trader = trader
         self._task: asyncio.Task[None] | None = None
 

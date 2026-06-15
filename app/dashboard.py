@@ -1,10 +1,10 @@
 """FastAPI routes for the web dashboard.
 
-Fixes vs previous version:
-  1. _trade_dict: remaining_seconds now uses settings.trade_duration_seconds
+Fixes applied:
+  1. _trade_dict: remaining_seconds uses settings.trade_duration_seconds
      (was hardcoded to 60.0)
   2. /api/live-trades: uses shared price cache via trader._get_cached_price()
-     instead of exchange.get_price() per trade
+     (single HTTP call regardless of number of open trades)
   3. /stats and /api/stats: pass current_price to calculate_stats()
      so unrealized_pnl is populated
   4. _trade_dict: exposes sl_price, tp_price and close_reason fields
@@ -77,7 +77,7 @@ def _trade_dict(trade: Trade, duration_seconds: int = 60) -> Dict[str, Any]:
     Args:
         trade: ORM object.
         duration_seconds: configured TRADE_DURATION_SECONDS — used to compute
-            the countdown timer correctly (fix for hardcoded 60s bug).
+            the countdown timer correctly.
     """
     now = datetime.now(timezone.utc)
     entry = (
@@ -86,7 +86,6 @@ def _trade_dict(trade: Trade, duration_seconds: int = 60) -> Dict[str, Any]:
         else trade.entry_time
     )
     elapsed = (now - entry).total_seconds()
-    # BUG FIX #1: was hardcoded 60.0 — now uses the configured duration
     remaining = max(0.0, duration_seconds - elapsed)
     return {
         "id": trade.id,
@@ -196,7 +195,6 @@ async def stats_page(request: Request) -> HTMLResponse:
         initial = await ctx.trader.get_futures_balance()
     except Exception:
         initial = 100.0
-    # BUG FIX #3: pass current_price so unrealized_pnl is computed
     try:
         current_price = await ctx.trader._get_cached_price()
     except Exception:
@@ -209,7 +207,7 @@ async def stats_page(request: Request) -> HTMLResponse:
     )
 
 
-# ── API endpoints ────────────────────────────────────────────────────────────
+# ── API endpoints ─────────────────────────────────────────────────────────────
 
 @router.get("/api/live-trades")
 async def api_live_trades(request: Request) -> JSONResponse:
@@ -218,7 +216,7 @@ async def api_live_trades(request: Request) -> JSONResponse:
     open_trades = await asyncio.to_thread(_fetch_open_trades)
     result: List[Dict[str, Any]] = []
 
-    # BUG FIX #2: fetch price ONCE from shared cache, not once per trade
+    # Fetch price once from shared cache — not once per trade
     try:
         price = await ctx.trader._get_cached_price()
     except Exception:
@@ -249,7 +247,6 @@ async def api_stats(request: Request) -> JSONResponse:
         initial = await ctx.trader.get_futures_balance()
     except Exception:
         initial = 100.0
-    # BUG FIX #3: pass current_price so unrealized_pnl is populated
     try:
         current_price = await ctx.trader._get_cached_price()
     except Exception:
